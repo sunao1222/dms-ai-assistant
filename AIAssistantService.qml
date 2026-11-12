@@ -30,6 +30,7 @@ Item {
     property bool isStreaming: false
     property bool isOnline: false
     property string activeStreamId: ""
+    property var chatFetcher: null
     property real streamStartedAtMs: 0
     property string lastUserText: ""
     property int lastHttpStatus: 0
@@ -39,6 +40,7 @@ Item {
     property string provider: "openai"
     property string baseUrl: "https://api.openai.com"
     property string model: "gpt-5.2"
+    property string systemPrompt: ""
     property real temperature: 0.7
     property int maxTokens: 4096
     property int timeout: 30
@@ -151,6 +153,7 @@ Item {
         const profile = {
             baseUrl: String(p.baseUrl || defaults.baseUrl).trim(),
             model: String(p.model || defaults.model).trim(),
+            systemPrompt: (typeof p.systemPrompt === "string") ? p.systemPrompt : "",
             apiKey: String(p.apiKey || "").trim(),
             saveApiKey: !!p.saveApiKey,
             apiKeyEnvVar: String(p.apiKeyEnvVar || "").trim(),
@@ -236,6 +239,7 @@ Item {
         const active = providers[provider] || normalizedProfile(provider, null)
         baseUrl = active.baseUrl
         model = active.model
+        systemPrompt = active.systemPrompt
         temperature = active.temperature
         maxTokens = active.maxTokens
         timeout = active.timeout
@@ -490,7 +494,7 @@ Item {
     function sendMessage(text) {
         if (!text || text.trim().length === 0)
             return;
-        if (isStreaming && chatFetcher.running) {
+        if (isStreaming) {
             markError(activeStreamId, "Please wait until the current response finishes.");
             return;
         }
@@ -498,7 +502,7 @@ Item {
     }
 
     function retryLast() {
-        if (isStreaming && chatFetcher.running)
+        if (isStreaming)
             return;
         const text = lastUserText || findLastUserText();
         if (!text)
@@ -507,7 +511,7 @@ Item {
     }
 
     function regenerateFromMessageId(messageId) {
-        if (!messageId || (isStreaming && chatFetcher.running))
+        if (!messageId || isStreaming)
             return;
 
         const assistantIdx = findIndexById(messageId);
@@ -558,23 +562,36 @@ Item {
         lastHttpStatus = 0;
 
         const payload = buildPayload(text);
-        const curlCmd = buildCurlCommand(payload);
-        if (!curlCmd) {
+        const curlRequest = buildCurlRequest(payload);
+        if (!curlRequest) {
             markError(streamId, "No API key or provider configuration.");
             return;
         }
 
-        streamCollector.lastLen = 0;
+        const fetcher = chatFetcherComponent.createObject(root, {
+            command: curlRequest.command,
+            environment: curlRequest.environment,
+            requestBody: curlRequest.body,
+            streamId: streamId
+        });
+        if (!fetcher) {
+            markError(streamId, "Unable to create request process.");
+            return;
+        }
+        chatFetcher = fetcher;
         streamBuffer = "";
-        chatFetcher.command = curlCmd;
-        chatFetcher.running = true;
+        fetcher.armed = true;
+        fetcher.running = true;
         saveSession();
     }
 
     function cancel() {
         if (!isStreaming)
             return;
-        chatFetcher.running = false;
+        if (chatFetcher) {
+            chatFetcher.requestBody = "";
+            chatFetcher.running = false;
+        }
         markError(activeStreamId, "Cancelled");
     }
 
@@ -675,6 +692,7 @@ Item {
             provider: provider,
             baseUrl: baseUrl,
             model: model,
+            systemPrompt: systemPrompt,
             temperature: temperature,
             max_tokens: maxTokens,
             messages: msgs,
@@ -691,7 +709,7 @@ Item {
         return payload;
     }
 
-    function buildCurlCommand(payload) {
+    function buildCurlRequest(payload) {
         const key = resolveApiKey();
         // Local/self-hosted providers can be keyless.
         if (!key && provider !== "custom" && provider !== "ollama")
@@ -705,7 +723,7 @@ Item {
             console.log("[AIAssistantService] request body(preview)=", bodyPreview.slice(0, 800));
         }
 
-        return AIApiAdapters.buildCurlCommand(provider, payload, key);
+        return AIApiAdapters.buildCurlRequest(req, payload.timeout);
     }
 
     property string streamBuffer: ""
@@ -1060,28 +1078,61 @@ Item {
         }
     }
 
-    Process {
-        id: chatFetcher
-        running: false
+    Component {
+        id: chatFetcherComponent
 
-        stdout: StdioCollector {
-            id: streamCollector
-            property int lastLen: 0
+        Process {
+            id: requestProcess
+            property string streamId: ""
+            property string requestBody: ""
+            property bool armed: false
+            property bool hasStarted: false
+            stdinEnabled: true
 
-            onTextChanged: {
-                const newData = text.substring(lastLen);
-                lastLen = text.length;
-                handleStreamChunk(newData);
+            function dispose() {
+                if (root.chatFetcher === requestProcess)
+                    root.chatFetcher = null;
+                requestProcess.destroy();
             }
 
-            onStreamFinished: {
-                handleStreamFinished(text);
+            onStarted: {
+                hasStarted = true;
+                if (root.chatFetcher === requestProcess && root.isStreaming && root.activeStreamId === streamId)
+                    write(requestBody);
+                requestBody = "";
+                stdinEnabled = false;
             }
-        }
 
-        onExited: exitCode => {
-            if (exitCode !== 0 && isStreaming) {
-                markError(activeStreamId, "Request failed (exit " + exitCode + ")");
+            onRunningChanged: {
+                if (armed && !running && !hasStarted) {
+                    requestBody = "";
+                    if (root.chatFetcher === requestProcess && root.isStreaming && root.activeStreamId === streamId)
+                        root.markError(streamId, "Unable to start request process.");
+                    Qt.callLater(() => requestProcess.dispose());
+                }
+            }
+
+            stdout: StdioCollector {
+                id: streamCollector
+                property int lastLen: 0
+
+                onTextChanged: {
+                    const newData = text.substring(lastLen);
+                    lastLen = text.length;
+                    if (root.chatFetcher === requestProcess && root.isStreaming && root.activeStreamId === requestProcess.streamId)
+                        root.handleStreamChunk(newData);
+                }
+            }
+
+            onExited: exitCode => {
+                requestBody = "";
+                if (root.chatFetcher === requestProcess) {
+                    if (exitCode !== 0 && root.isStreaming && root.activeStreamId === streamId)
+                        root.markError(streamId, "Request failed (exit " + exitCode + ")");
+                    else if (exitCode === 0)
+                        root.handleStreamFinished(streamCollector.text);
+                }
+                Qt.callLater(() => requestProcess.dispose());
             }
         }
     }

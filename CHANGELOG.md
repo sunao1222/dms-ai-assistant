@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Configure a multiline system prompt per provider, applied to new requests without clearing the existing conversation.
+
+### Fixed
+
+- Send chat request bodies through standard input so long prompts and histories do not exceed process argument limits. Report process startup failures and keep chat request headers and URLs out of Quickshell's startup-error command log.
+
 ## [1.7.1] - 2026-10-14
 
 ### Fixed

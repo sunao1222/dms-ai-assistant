@@ -6,6 +6,10 @@ Chat follows incoming responses while you are at the bottom. Scroll up with the 
 
 The scrolling regression checks run with `node --test tests/scrolling.test.cjs` (requires Qt 6 Quick Test). They use an isolated QML scene and no provider credentials.
 
+Provider request-format checks run with `QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input tests/tst_SystemPromptAdapters.qml -o -,txt` (requires Qt 6 Quick Test).
+
+Transport regression checks run with `node --test tests/streaming-transport.test.cjs` and require Quickshell, `curl`, and a POSIX `sh`. They use a loopback HTTP server and isolated settings; set `QUICKSHELL_BIN` if Quickshell is not on `PATH`.
+
 ## Features
 
 - **Multiple AI Provider Support**: OpenAI, Anthropic, Google Gemini, Ollama, Inception, and custom OpenAI-compatible APIs
@@ -15,6 +19,7 @@ The scrolling regression checks run with `node --test tests/scrolling.test.cjs` 
 - **Markdown Rendering**: Full markdown support with syntax highlighting for code blocks
 - **Persistent Chat History**: Conversations are saved and restored across sessions
 - **Flexible Configuration**: Per-provider settings for model, temperature, max tokens, and more
+- **Custom System Prompts**: Set persistent, multiline instructions separately for each provider
 - **API Key Management**: Store API keys securely or use environment variables
 - **Session-based Keys**: Option to use in-memory API keys that don't persist to disk
 - **Monospace Font Option**: Toggle monospace rendering for technical discussions
@@ -29,7 +34,7 @@ The scrolling regression checks run with `node --test tests/scrolling.test.cjs` 
 
 - **DankMaterialShell**: Latest version with plugin toggle support
 - **Qt/QML**: Qt 6.x with QtQuick support (provided by Quickshell)
-- **Dependencies**: `curl` for HTTP requests, `wl-copy` for clipboard operations
+- **Dependencies**: `curl` and a POSIX `sh` for HTTP requests, `wl-copy` for clipboard operations
 
 ## Installation
 
@@ -125,6 +130,14 @@ Model: Your model name
 API Key: Optional (leave empty for local APIs)
 ```
 
+### System Prompts
+
+Enter optional instructions in **Provider Configuration → System Prompt**. The prompt is saved for the selected provider when you leave the field, close settings, or switch providers. Leave it empty, or use only whitespace, to send no system instruction.
+
+The saved instruction applies to the next message, retry, or regeneration; changing it does not clear the existing conversation. Earlier messages remain in the context even if they were generated under a different instruction.
+
+Prompts are stored as `providers.<provider>.systemPrompt` in plugin settings, not as chat messages. They are sent to the selected provider and can appear in debug request logs, so avoid including sensitive information.
+
 ### API Key Options
 
 1. **Store in Settings** (Remember API Key toggle ON)
@@ -219,7 +232,7 @@ Chat history is saved to `~/.local/state/DankMaterialShell/plugins/aiAssistant/s
 - Automatically saved after each message
 - Limited to last 50 messages (configurable in code)
 - Cleared when chat history is manually cleared
-- Invalidated when provider settings change
+- Kept separately for each provider and base URL; changing the system prompt does not clear the current history
 
 ## Troubleshooting
 
@@ -312,5 +325,4 @@ For issues, questions, or feature requests:
 - [ ] Multi-turn conversation context management
 - [ ] Conversation branching/forking
 - [ ] Export conversations to markdown
-- [ ] Custom system prompts
 - [ ] Conversation templates/presets

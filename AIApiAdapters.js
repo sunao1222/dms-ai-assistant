@@ -28,30 +28,38 @@ function openaiModelsUrl(baseUrl) {
     return b + "/v1/models";
 }
 
-function buildCurlCommand(provider, payload, apiKey) {
-    const request = buildRequest(provider, payload, apiKey);
+function buildCurlRequest(request, timeout) {
     if (!request || !request.url)
         return null;
 
-    const timeout = payload.timeout || 30;
-    const baseCmd = [
-        "curl",
-        "-N",
-        "-sS",
-        "--no-buffer",
-        "--show-error",
-        "--connect-timeout",
-        "5",
-        "--max-time",
-        String(timeout),
-        "-w",
-        "\\nDMS_STATUS:%{http_code}\\n"
-    ];
+    // Quickshell logs Process.command when startup fails, so keep headers and URL in the environment.
+    const environment = { DMS_AI_CURL_URL: request.url };
+    const headers = request.headers || [];
+    let script = "";
+    for (let i = 0; i < headers.length; i++) {
+        const name = "DMS_AI_CURL_ARG_" + i;
+        environment[name] = headers[i];
+        script += 'set -- "$@" "$' + name + '"; ';
+    }
+    script += 'exec curl "$@" --data-binary @- "$DMS_AI_CURL_URL"';
 
-    const cmd = baseCmd
-        .concat(request.headers || [])
-        .concat(["-d", request.body || "{}", request.url]);
-    return cmd;
+    return {
+        command: [
+            "sh", "-c", script, "dms-ai-curl",
+            "-N",
+            "-sS",
+            "--no-buffer",
+            "--show-error",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            String(timeout || 30),
+            "-w",
+            "\\nDMS_STATUS:%{http_code}\\n"
+        ],
+        environment,
+        body: request.body || "{}"
+    };
 }
 
 function buildModelsRequest(provider, baseUrl, apiKey) {
@@ -172,6 +180,16 @@ function buildRequest(provider, payload, apiKey) {
     }
 }
 
+function systemPromptForPayload(payload) {
+    const prompt = typeof payload.systemPrompt === "string" ? payload.systemPrompt : "";
+    return prompt.trim() ? prompt : "";
+}
+
+function messagesWithSystemPrompt(payload) {
+    const prompt = systemPromptForPayload(payload);
+    return prompt ? [{ role: "system", content: prompt }].concat(payload.messages) : payload.messages;
+}
+
 function openaiRequest(payload, apiKey) {
     return openaiCompatibleRequest(payload, apiKey, "max_completion_tokens", false);
 }
@@ -181,7 +199,7 @@ function openaiCompatibleRequest(payload, apiKey, tokenParameter, includeTempera
     const headers = ["-H", "Content-Type: application/json", "-H", "Authorization: Bearer " + apiKey];
     const body = {
         model: payload.model,
-        messages: payload.messages,
+        messages: messagesWithSystemPrompt(payload),
         stream: true
     };
     body[tokenParameter] = payload.max_tokens || 1024;
@@ -203,7 +221,7 @@ function inceptionRequest(payload, apiKey) {
         t = 1.0;
     const body = {
         model: payload.model,
-        messages: payload.messages,
+        messages: messagesWithSystemPrompt(payload),
         max_tokens: mt,
         temperature: t,
         stream: true
@@ -232,6 +250,9 @@ function anthropicRequest(payload, apiKey) {
         temperature: payload.temperature || 0.7,
         stream: true
     };
+    const prompt = systemPromptForPayload(payload);
+    if (prompt)
+        body.system = prompt;
     return { url, headers, body: JSON.stringify(body) };
 }
 
@@ -251,6 +272,9 @@ function geminiRequest(payload, apiKey) {
             maxOutputTokens: payload.max_tokens || 1024
         }
     };
+    const prompt = systemPromptForPayload(payload);
+    if (prompt)
+        body.systemInstruction = { parts: [{ text: prompt }] };
     if (payload.geminiWebSearch === true)
         body.tools = [{ google_search: {} }];
     return { url, headers, body: JSON.stringify(body) };
@@ -265,7 +289,7 @@ function ollamaRequest(payload) {
     const url = normalizeBaseUrl(payload.baseUrl || "http://localhost:11434") + "/api/chat";
     const body = {
         model: payload.model,
-        messages: payload.messages,
+        messages: messagesWithSystemPrompt(payload),
         stream: true,
         options: {
             temperature: payload.temperature || 0.7,

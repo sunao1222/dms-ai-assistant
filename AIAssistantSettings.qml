@@ -22,6 +22,10 @@ Item {
     property string provider: "openai"
     property string baseUrl: ""
     property string model: ""
+    property string systemPrompt: ""
+    property bool systemPromptDirty: false
+    property bool syncingSystemPrompt: false
+    property string systemPromptDraftProvider: ""
     property string apiKey: ""
     property bool saveApiKey: false
     property string apiKeyEnvVar: ""
@@ -119,6 +123,7 @@ Item {
         const profile = {
             baseUrl: String(p.baseUrl || d.baseUrl).trim(),
             model: String(p.model || d.model).trim(),
+            systemPrompt: (typeof p.systemPrompt === "string") ? p.systemPrompt : "",
             apiKey: String(p.apiKey || "").trim(),
             saveApiKey: !!p.saveApiKey,
             apiKeyEnvVar: String(p.apiKeyEnvVar || "").trim(),
@@ -169,6 +174,7 @@ Item {
         const active = providers[provider] || normalizedProfile(provider, null)
         baseUrl = active.baseUrl
         model = active.model
+        systemPrompt = active.systemPrompt
         apiKey = active.apiKey
         saveApiKey = active.saveApiKey
         apiKeyEnvVar = active.apiKeyEnvVar
@@ -180,9 +186,31 @@ Item {
             inceptionReasoningSummaryWait = !!active.inceptionReasoningSummaryWait
         }
         geminiWebSearch = !!active.geminiWebSearch
+        if (!systemPromptDirty || systemPromptDraftProvider !== provider) {
+            syncingSystemPrompt = true
+            systemPromptEditor.text = systemPrompt
+            syncingSystemPrompt = false
+            systemPromptDraftProvider = provider
+        }
+    }
+
+    function commitSystemPromptDraft() {
+        if (!systemPromptDirty)
+            return
+        const draftProvider = systemPromptDraftProvider
+        const draft = systemPromptEditor.text
+        systemPromptDirty = false
+
+        const latestProviders = mergedProviders(PluginService.loadPluginData(pluginId, "providers", null))
+        const active = latestProviders[draftProvider]
+        if (active.systemPrompt === draft)
+            return
+        active.systemPrompt = draft
+        saveProviders(latestProviders)
     }
 
     function setProvider(providerId) {
+        commitSystemPromptDraft()
         provider = providerId
         const active = providers[provider] || normalizedProfile(provider, null)
         applyActiveProfile()
@@ -213,7 +241,10 @@ Item {
 
     function load() {
         const selectedProvider = String(PluginService.loadPluginData(pluginId, "provider", "openai")).trim() || "openai"
-        provider = ["openai", "anthropic", "gemini", "inception", "ollama", "custom"].includes(selectedProvider) ? selectedProvider : "openai"
+        const providerId = ["openai", "anthropic", "gemini", "inception", "ollama", "custom"].includes(selectedProvider) ? selectedProvider : "openai"
+        if (systemPromptDirty && systemPromptDraftProvider !== providerId)
+            commitSystemPromptDraft()
+        provider = providerId
 
         const rawProviders = PluginService.loadPluginData(pluginId, "providers", null)
         let nextProviders = mergedProviders(rawProviders)
@@ -417,6 +448,73 @@ Item {
                                         color: aiService.modelsError ? Theme.error : Theme.surfaceVariantText
                                         wrapMode: Text.WordWrap
                                     }
+                                }
+
+                                StyledText {
+                                    text: I18n.tr("System Prompt")
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                }
+
+                                StyledText {
+                                    width: parent.width
+                                    text: I18n.tr("Optional instructions for this provider. Saved when you leave this field and applied to the next request.")
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                    wrapMode: Text.WordWrap
+                                }
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: 120
+                                    radius: Theme.cornerRadius
+                                    color: Theme.surfaceContainer
+                                    border.color: systemPromptEditor.activeFocus ? Theme.primary : Theme.outlineMedium
+                                    border.width: systemPromptEditor.activeFocus ? 2 : 1
+
+                                    ScrollView {
+                                        id: systemPromptScroll
+                                        anchors.fill: parent
+                                        anchors.margins: Theme.spacingS
+                                        clip: true
+                                        padding: 0
+                                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                                        TextArea {
+                                            id: systemPromptEditor
+                                            objectName: "systemPromptEditor"
+                                            implicitWidth: systemPromptScroll.availableWidth
+                                            wrapMode: TextArea.Wrap
+                                            textFormat: TextEdit.PlainText
+                                            background: Rectangle { color: "transparent" }
+                                            font.pixelSize: Theme.fontSizeMedium
+                                            font.family: Theme.fontFamily
+                                            font.weight: Theme.fontWeight
+                                            color: Theme.surfaceText
+                                            padding: 0
+                                            selectByMouse: true
+
+                                            onTextChanged: {
+                                                if (!root.syncingSystemPrompt) {
+                                                    if (!root.systemPromptDirty)
+                                                        root.systemPromptDraftProvider = root.provider
+                                                    root.systemPromptDirty = true
+                                                }
+                                            }
+                                            onActiveFocusChanged: {
+                                                if (!activeFocus)
+                                                    root.commitSystemPromptDraft()
+                                            }
+                                        }
+                                    }
+                                }
+
+                                StyledText {
+                                    width: parent.width
+                                    text: I18n.tr("Stored in plugin settings and sent to the provider; debug logs may include it.")
+                                    font.pixelSize: Theme.fontSizeSmall
+                                    color: Theme.surfaceVariantText
+                                    wrapMode: Text.WordWrap
                                 }
 
                                 StyledText {

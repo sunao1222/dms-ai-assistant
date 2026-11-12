@@ -19,7 +19,7 @@ Item {
         if (!visible) {
             // Force menu teardown when the panel is hidden/toggled off.
             // This avoids stale popup/dropdown internals when reopened.
-            showSettingsMenu = false
+            setSettingsVisible(false)
             showOverflowMenu = false
             showNewChatConfirm = false
         }
@@ -43,8 +43,14 @@ Item {
         hintResetTimer.restart()
     }
 
+    function setSettingsVisible(visible) {
+        if (!visible && settingsPanelLoader && settingsPanelLoader.item)
+            settingsPanelLoader.item.commitSystemPromptDraft()
+        showSettingsMenu = visible
+    }
+
     function openSettingsAndFocusApiKey() {
-        showSettingsMenu = true
+        setSettingsVisible(true)
         Qt.callLater(() => {
             const panel = settingsPanelLoader.item
             if (panel && panel.focusApiKeyField)
@@ -222,7 +228,7 @@ Item {
             DankActionButton {
                 iconName: "settings"
                 tooltipText: showSettingsMenu ? I18n.tr("Hide settings") : I18n.tr("Settings")
-                onClicked: showSettingsMenu = !showSettingsMenu
+                onClicked: setSettingsVisible(!showSettingsMenu)
             }
 
             DankActionButton {
@@ -290,7 +296,7 @@ Item {
                     DankButton {
                         text: I18n.tr("Open Settings")
                         iconName: "settings"
-                        onClicked: showSettingsMenu = true
+                        onClicked: setSettingsVisible(true)
                     }
 
                     DankButton {
@@ -480,7 +486,7 @@ Item {
         AIAssistantSettings {
             anchors.fill: parent
             isVisible: true
-            onCloseRequested: showSettingsMenu = false
+            onCloseRequested: setSettingsVisible(false)
             pluginId: "aiAssistant"
             aiService: root.aiService
         }
@@ -521,7 +527,7 @@ Item {
                     iconName: "settings"
                     width: parent.width
                     onClicked: {
-                        showSettingsMenu = !showSettingsMenu
+                        setSettingsVisible(!showSettingsMenu)
                         showOverflowMenu = false
                     }
                 }

@@ -86,6 +86,18 @@ TestCase {
         }
     }
 
+    function test_zeroTemperature() {
+        const input = payload();
+        input.temperature = 0;
+        for (const provider of ["custom", "anthropic", "gemini", "ollama"]) {
+            const body = bodyFor(provider, input);
+            const actual = provider === "gemini" ? body.generationConfig.temperature
+                         : provider === "ollama" ? body.options.temperature
+                         : body.temperature;
+            compare(actual, 0, provider + " temperature");
+        }
+    }
+
     function test_absentAndBlankPrompt() {
         for (let i = 0; i < providers.length; i++) {
             const provider = providers[i];

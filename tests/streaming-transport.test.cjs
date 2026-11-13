@@ -149,6 +149,19 @@ test('large instructions reach curl intact and sequential streamed replies compl
     ]);
 });
 
+test('a duplicate send does not interrupt an active response', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const requests = [];
+    const server = streamingServer(requests);
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const output = await runService(fixture, `http://127.0.0.1:${port}`, '', process.env.PATH, 'duplicate');
+    assert.match(output, /TRANSPORT_DUPLICATE_OK/);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body.messages.slice(1), [{ role: 'user', content: 'first' }]);
+});
+
 test('cancelling a streaming request does not interfere with the next request', async t => {
     const fixture = fixtureDirectory();
     t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
@@ -162,6 +175,97 @@ test('cancelling a streaming request does not interfere with the next request', 
     assert.equal(requests[1].body.messages[0].content, prompt);
     assert.deepEqual(requests[1].body.messages.slice(1), [{ role: 'user', content: 'second' }]);
 });
+test('changing provider configuration cancels the old request before starting another', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const requests = [];
+    const server = streamingServer(requests, 1000, path.join(fixture, 'request-started'));
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const output = await runService(fixture, `http://127.0.0.1:${port}`, '', process.env.PATH, 'config-switch');
+    assert.match(output, /TRANSPORT_STREAMING_OK/);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[1].body.messages.slice(1), [{ role: 'user', content: 'second' }]);
+});
+
+test('model discovery sends credentials and returns provider models', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const requests = [];
+    const server = http.createServer((req, res) => {
+        requests.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
+        req.resume();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'model-b' }, { id: 'model-a' }] }));
+    });
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const key = 'model-key-\"\\\\$(not-a-command)';
+    const output = await runService(fixture, `http://127.0.0.1:${port}`, '', process.env.PATH, 'models', key);
+    assert.match(output, /TRANSPORT_MODELS_OK/);
+    assert.deepEqual(requests, [{ method: 'GET', url: '/v1/models', authorization: `Bearer ${key}` }]);
+});
+
+test('session credentials are provider-scoped and forgotten keys are removed', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const server = http.createServer((req, res) => { req.resume(); res.writeHead(404); res.end(); });
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const output = await runService(fixture, `http://127.0.0.1:${port}`, '', process.env.PATH, 'credentials');
+    assert.match(output, /TRANSPORT_CREDENTIALS_OK/);
+});
+
+test('a truncated response remains an error after a finish event', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const server = http.createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Content-Length': '1000' });
+            res.end('data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"stop"}]}\n\n');
+        });
+    });
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const output = await runService(fixture, `http://127.0.0.1:${port}`,
+                                    'Request failed (exit 18)', process.env.PATH);
+    assert.match(output, /TRANSPORT_ERROR_OK/);
+});
+test('stream error events are reported rather than treated as successful responses', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const server = http.createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end('event: error\ndata: {"type":"error","error":{"message":"overloaded"}}\n\n');
+        });
+    });
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const output = await runService(fixture, `http://127.0.0.1:${port}`,
+                                    'Request failed: overloaded', process.env.PATH);
+    assert.match(output, /TRANSPORT_ERROR_OK/);
+});
+
+test('Ollama streaming errors are not treated as successful responses', async t => {
+    const fixture = fixtureDirectory();
+    t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+    const server = http.createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(req.url === '/api/tags' ? '{"models":[]}' : '{"error":"model missing"}\n');
+        });
+    });
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const port = await listen(server);
+    const output = await runService(fixture, `http://127.0.0.1:${port}`,
+                                    'Request failed: model missing', process.env.PATH, 'ollama-error');
+    assert.match(output, /TRANSPORT_ERROR_OK/);
+});
+
 
 test('cancelling before process startup leaves the next request intact', async t => {
     const fixture = fixtureDirectory();

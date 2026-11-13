@@ -4,11 +4,9 @@ An integrated AI chat assistant plugin for DankMaterialShell with support for mu
 
 Chat follows incoming responses while you are at the bottom. Scroll up with the mouse wheel, touchpad, or scrollbar to read earlier messages without being pulled back down; return to the bottom to resume following.
 
-The scrolling regression checks run with `node --test tests/scrolling.test.cjs` (requires Qt 6 Quick Test). They use an isolated QML scene and no provider credentials.
+Run the regression checks with `node --test tests/*.test.cjs`. They require Node.js, Qt 6 Quick Test, Quickshell, `curl`, and a POSIX `sh`; transport checks use loopback servers and isolated settings. Set `QML_TEST_RUNNER` if `qmltestrunner` is not at `/usr/lib/qt6/bin/qmltestrunner`, and `QUICKSHELL_BIN` if Quickshell is not on `PATH`.
 
-Provider request-format checks run with `QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input tests/tst_SystemPromptAdapters.qml -o -,txt` (requires Qt 6 Quick Test).
-
-Transport regression checks run with `node --test tests/streaming-transport.test.cjs` and require Quickshell, `curl`, and a POSIX `sh`. They use a loopback HTTP server and isolated settings; set `QUICKSHELL_BIN` if Quickshell is not on `PATH`.
+Provider request-format checks run with `QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input tests/tst_SystemPromptAdapters.qml -o -,txt`.
 
 ## Features
 
@@ -155,6 +153,8 @@ Prompts are stored as `providers.<provider>.systemPrompt` in plugin settings, no
    - Enter API key each session
    - Stored in memory only
    - Cleared on restart
+   - Kept separately per provider
+   - Turning off Remember removes the saved key and keeps the active key for the current session
 
 ### Model Parameters
 

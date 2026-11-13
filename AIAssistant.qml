@@ -79,6 +79,10 @@ Item {
             console.warn("[AIAssistant UI] service unavailable");
             return;
         }
+        if (aiService.isStreaming) {
+            showTemporaryHint(I18n.tr("Stop current response first."));
+            return;
+        }
         console.log("[AIAssistant UI] sendCurrentMessage");
         aiService.sendMessage(composer.text.trim());
         composer.text = "";
@@ -114,7 +118,8 @@ Item {
         const provider = aiService.provider ?? "openai"
         const baseUrl = aiService.baseUrl ?? ""
         const localCapable = provider === "custom" || provider === "ollama"
-        const isRemote = !localCapable || (!baseUrl.includes("localhost") && !baseUrl.includes("127.0.0.1"))
+        const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?(?:[/?#]|$)/i.test(baseUrl.trim())
+        const isRemote = !localCapable || !isLocal
 
         if (isRemote)
             return I18n.tr("Remote provider (%1): avoid sensitive data.").arg(provider.toUpperCase())
@@ -387,6 +392,7 @@ Item {
 
                             TextArea {
                                 id: composer
+                                objectName: "composer"
                                 implicitWidth: scrollView.availableWidth
                                 wrapMode: TextArea.Wrap
                                 background: Rectangle { color: "transparent" }

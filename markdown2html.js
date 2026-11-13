@@ -44,7 +44,10 @@ function markdownToHtml(text, colors) {
     // Fenced code block: store HTML behind a placeholder.
     // Resolved after _md.parse() so renderer.list() can lift it out of <li>.
     renderer.code = function(code, lang) {
-        lang = (lang || "").trim();
+        lang = (lang || "").trim()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
         var escaped = code
             .replace(/&/g, "&amp;")
             .replace(/</g,  "&lt;")
@@ -162,9 +165,9 @@ function markdownToHtml(text, colors) {
                 } else {
                     var txt = part.trim();
                     if (txt) {
-                        // Continuation text after a code block gets its own <li>.
-                        seg.push('<li>' + txt + '</li>\n');
-                        flush();
+                        // Continuation belongs to the same item, not a new list
+                        // item; otherwise subsequent ordered items are renumbered.
+                        out += txt + '\n';
                     }
                 }
             }

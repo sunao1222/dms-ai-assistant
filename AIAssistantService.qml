@@ -47,6 +47,7 @@ Item {
     property string apiKey: ""
     property bool saveApiKey: false
     property string sessionApiKey: "" // In-memory key
+    property var sessionApiKeys: ({})
     property string apiKeyEnvVar: ""
     property bool useMonospace: false
     property string inceptionReasoningEffort: "medium"
@@ -68,9 +69,18 @@ Item {
 
     readonly property bool debugEnabled: (Quickshell.env("DMS_LOG_LEVEL") || "").toLowerCase() === "debug"
 
-    onProviderChanged: handleConfigChanged()
+    onProviderChanged: {
+        sessionApiKey = sessionApiKeys[provider] || "";
+        handleConfigChanged();
+    }
     onBaseUrlChanged: handleConfigChanged()
-    onSessionApiKeyChanged: refreshAvailableModels(true)
+    onSessionApiKeyChanged: {
+        const nextKeys = Object.assign({}, sessionApiKeys);
+        nextKeys[provider] = sessionApiKey;
+        sessionApiKeys = nextKeys;
+        if (!suppressConfigChange)
+            refreshAvailableModels(true);
+    }
 
     function defaultsForProvider(id) {
         switch (id) {
@@ -154,7 +164,7 @@ Item {
             baseUrl: String(p.baseUrl || defaults.baseUrl).trim(),
             model: String(p.model || defaults.model).trim(),
             systemPrompt: (typeof p.systemPrompt === "string") ? p.systemPrompt : "",
-            apiKey: String(p.apiKey || "").trim(),
+            apiKey: p.saveApiKey ? String(p.apiKey || "").trim() : "",
             saveApiKey: !!p.saveApiKey,
             apiKeyEnvVar: String(p.apiKeyEnvVar || "").trim(),
             temperature: (typeof p.temperature === "number") ? p.temperature : defaults.temperature,
@@ -259,6 +269,16 @@ Item {
         const currentHash = computeConfigHash();
         if (providerConfigHash !== currentHash)
             switchConfigHistory(currentHash)
+
+        // Older versions could leave keys on disk after Remember API Key was disabled.
+        if (rawProviders && typeof rawProviders === "object") {
+            const ids = Object.keys(nextProviders);
+            const hasUnrememberedKey = ids.some(id => rawProviders[id] && !rawProviders[id].saveApiKey && rawProviders[id].apiKey);
+            if (hasUnrememberedKey)
+                PluginService.savePluginData(pluginId, "providers", nextProviders);
+        }
+        if (!active.saveApiKey && PluginService.loadPluginData(pluginId, "apiKey", ""))
+            PluginService.savePluginData(pluginId, "apiKey", "");
     }
 
     Connections {
@@ -379,9 +399,11 @@ Item {
             return;
 
         const previousHash = providerConfigHash;
-        if (previousHash && previousHash !== nextHash)
-            persistCurrentMessagesForHash(previousHash)
-
+        if (previousHash && previousHash !== nextHash) {
+            if (isStreaming)
+                cancel();
+            persistCurrentMessagesForHash(previousHash);
+        }
         providerConfigHash = nextHash;
         const nextMessages = (sessionsByConfig && Array.isArray(sessionsByConfig[nextHash])) ? sessionsByConfig[nextHash] : [];
         loadMessages(nextMessages);
@@ -494,10 +516,8 @@ Item {
     function sendMessage(text) {
         if (!text || text.trim().length === 0)
             return;
-        if (isStreaming) {
-            markError(activeStreamId, "Please wait until the current response finishes.");
+        if (isStreaming)
             return;
-        }
         startStreaming(text.trim(), true);
     }
 
@@ -748,10 +768,8 @@ Item {
                 continue;
             }
 
-            if (line === "data: [DONE]" || line === "data:[DONE]") {
-                finalizeStream(activeStreamId);
+            if (line === "data: [DONE]" || line === "data:[DONE]")
                 continue;
-            }
 
             if (line.startsWith("data:")) {
                 const jsonPart = line.substring(5).trim();
@@ -763,6 +781,14 @@ Item {
     function parseProviderDelta(jsonText) {
         try {
             const data = JSON.parse(jsonText);
+            if (data.error && isStreaming) {
+                const error = data.error;
+                const message = typeof error === "string" ? error : (error.message || error.type || "Unknown error");
+                if (chatFetcher)
+                    chatFetcher.running = false;
+                markError(activeStreamId, "Request failed: " + message);
+                return;
+            }
             if (debugEnabled && provider === "gemini") {
                 console.log("[AIAssistantService] gemini chunk:", JSON.stringify(data).slice(0, 200));
             }
@@ -770,43 +796,23 @@ Item {
                 const delta = data.delta?.text || "";
                 if (delta)
                     updateStreamContent(activeStreamId, delta);
-                if (data.stop_reason)
-                    finalizeStream(activeStreamId);
+
             } else if (provider === "ollama") {
                 const delta = data.message?.content || "";
                 if (delta)
                     updateStreamContent(activeStreamId, delta);
-                if (data.done)
-                    finalizeStream(activeStreamId);
+
             } else if (provider === "gemini") {
                 const chunks = Array.isArray(data) ? data : [data];
                 chunks.forEach(chunk => {
                     const candidate = chunk.candidates?.[0];
                     const parts = candidate?.content?.parts || [];
-                    let hasContent = false;
-                    let hasNonEmptyText = false;
+
                     parts.forEach(p => {
-                        if (p.text !== undefined)
-                            hasContent = true;
                         if (p.text) {
-                            hasNonEmptyText = true;
                             updateStreamContent(activeStreamId, p.text);
                         }
                     });
-                    // Finalize on finishReason OR if we get empty text with metadata (like thoughtSignature)
-                    const finishReason = candidate?.finishReason;
-                    if (finishReason && finishReason !== "FINISH_REASON_UNSPECIFIED") {
-                        finalizeStream(activeStreamId);
-                    }
-                    // Some Gemini variants emit usageMetadata before visible text arrives.
-                    // Only use usageMetadata as an end-of-stream fallback once we've already
-                    // received visible output and this chunk contains no content parts.
-                    const existing = getMessageContentById(activeStreamId);
-                    if (chunk.usageMetadata && !hasContent && existing && existing.length > 0) {
-                        finalizeStream(activeStreamId);
-                    } else if (chunk.usageMetadata && hasContent && !hasNonEmptyText && existing && existing.length > 0) {
-                        finalizeStream(activeStreamId);
-                    }
                 });
             } else { // openai
                 const deltas = data.choices?.[0]?.delta?.content;
@@ -817,10 +823,6 @@ Item {
                     });
                 } else if (typeof deltas === "string") {
                     updateStreamContent(activeStreamId, deltas);
-                }
-
-                if (data.choices?.[0]?.finish_reason) {
-                    finalizeStream(activeStreamId);
                 }
             }
         } catch (e) {
@@ -968,8 +970,8 @@ Item {
             return;
         }
 
-        const command = AIApiAdapters.buildModelsCurlCommand(provider, normalizedBase, key);
-        if (!command)
+        const curlRequest = AIApiAdapters.buildModelsCurlRequest(provider, normalizedBase, key);
+        if (!curlRequest)
             return;
 
         modelsLoading = true;
@@ -981,7 +983,8 @@ Item {
         modelFetchProvider = provider;
         modelFetchBaseUrl = normalizedBase;
         modelFetchCredential = key;
-        modelFetcher.command = command;
+        modelFetcher.command = curlRequest.command;
+        modelFetcher.environment = curlRequest.environment;
         modelFetcher.running = true;
     }
 

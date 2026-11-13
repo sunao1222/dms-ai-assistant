@@ -28,38 +28,49 @@ function openaiModelsUrl(baseUrl) {
     return b + "/v1/models";
 }
 
-function buildCurlRequest(request, timeout) {
+function quoteCurlConfig(value) {
+    return '"' + String(value)
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n") + '"';
+}
+
+function buildCurlProcess(request, args) {
     if (!request || !request.url)
         return null;
 
-    // Quickshell logs Process.command when startup fails, so keep headers and URL in the environment.
-    const environment = { DMS_AI_CURL_URL: request.url };
     const headers = request.headers || [];
-    let script = "";
-    for (let i = 0; i < headers.length; i++) {
-        const name = "DMS_AI_CURL_ARG_" + i;
-        environment[name] = headers[i];
-        script += 'set -- "$@" "$' + name + '"; ';
+    let config = "url = " + quoteCurlConfig(request.url) + "\n";
+    for (let i = 0; i < headers.length; i += 2) {
+        if (headers[i] !== "-H" || i + 1 >= headers.length)
+            return null;
+        config += "header = " + quoteCurlConfig(headers[i + 1]) + "\n";
     }
-    script += 'exec curl "$@" --data-binary @- "$DMS_AI_CURL_URL"';
 
+    // Keep credentials out of both Quickshell startup logs and curl's argv.
+    // FD 3 carries curl config while stdin remains available for the request body.
+    const script = 'exec 3<<DMS_AI_CURL_CONFIG_END\n'
+        + '$DMS_AI_CURL_CONFIG\n'
+        + 'DMS_AI_CURL_CONFIG_END\n'
+        + 'unset DMS_AI_CURL_CONFIG\n'
+        + 'exec curl --config /dev/fd/3 "$@"';
     return {
-        command: [
-            "sh", "-c", script, "dms-ai-curl",
-            "-N",
-            "-sS",
-            "--no-buffer",
-            "--show-error",
-            "--connect-timeout",
-            "5",
-            "--max-time",
-            String(timeout || 30),
-            "-w",
-            "\\nDMS_STATUS:%{http_code}\\n"
-        ],
-        environment,
-        body: request.body || "{}"
+        command: ["sh", "-c", script, "dms-ai-curl"].concat(args),
+        environment: { DMS_AI_CURL_CONFIG: config }
     };
+}
+
+function buildCurlRequest(request, timeout) {
+    const process = buildCurlProcess(request, [
+        "-N", "-sS", "--no-buffer", "--show-error",
+        "--connect-timeout", "5", "--max-time", String(timeout || 30),
+        "-w", "\\nDMS_STATUS:%{http_code}\\n",
+        "--data-binary", "@-"
+    ]);
+    if (process)
+        process.body = request.body || "{}";
+    return process;
 }
 
 function buildModelsRequest(provider, baseUrl, apiKey) {
@@ -102,18 +113,11 @@ function buildModelsRequest(provider, baseUrl, apiKey) {
     }
 }
 
-function buildModelsCurlCommand(provider, baseUrl, apiKey) {
-    const request = buildModelsRequest(provider, baseUrl, apiKey);
-    if (!request || !request.url)
-        return null;
-    return [
-        "curl",
-        "-sS",
-        "--show-error",
-        "--connect-timeout", "5",
-        "--max-time", "15",
+function buildModelsCurlRequest(provider, baseUrl, apiKey) {
+    return buildCurlProcess(buildModelsRequest(provider, baseUrl, apiKey), [
+        "-sS", "--show-error", "--connect-timeout", "5", "--max-time", "15",
         "-w", "\\nDMS_STATUS:%{http_code}\\n"
-    ].concat(request.headers || []).concat([request.url]);
+    ]);
 }
 
 function parseModelsResponse(provider, responseText) {
@@ -204,7 +208,7 @@ function openaiCompatibleRequest(payload, apiKey, tokenParameter, includeTempera
     };
     body[tokenParameter] = payload.max_tokens || 1024;
     if (includeTemperature)
-        body.temperature = payload.temperature || 0.7;
+        body.temperature = (typeof payload.temperature === "number") ? payload.temperature : 0.7;
     return { url, headers, body: JSON.stringify(body) };
 }
 
@@ -247,7 +251,7 @@ function anthropicRequest(payload, apiKey) {
         model: payload.model,
         messages: payload.messages.map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
         max_tokens: payload.max_tokens || 1024,
-        temperature: payload.temperature || 0.7,
+        temperature: (typeof payload.temperature === "number") ? payload.temperature : 0.7,
         stream: true
     };
     const prompt = systemPromptForPayload(payload);
@@ -268,7 +272,7 @@ function geminiRequest(payload, apiKey) {
     const body = {
         contents,
         generationConfig: {
-            temperature: payload.temperature || 0.7,
+            temperature: (typeof payload.temperature === "number") ? payload.temperature : 0.7,
             maxOutputTokens: payload.max_tokens || 1024
         }
     };
@@ -292,7 +296,7 @@ function ollamaRequest(payload) {
         messages: messagesWithSystemPrompt(payload),
         stream: true,
         options: {
-            temperature: payload.temperature || 0.7,
+            temperature: (typeof payload.temperature === "number") ? payload.temperature : 0.7,
             num_predict: payload.max_tokens || 1024
         }
     };

@@ -494,6 +494,20 @@ Item {
                                             padding: 0
                                             selectByMouse: true
 
+                                            cursorDelegate: DankTextCursor {
+                                                color: systemPromptEditor.color
+                                                x: systemPromptEditor.cursorRectangle.x
+                                                y: systemPromptEditor.cursorRectangle.y
+                                                height: systemPromptEditor.cursorRectangle.height
+                                                shown: systemPromptEditor.cursorVisible
+
+                                                readonly property int editCursorPosition: systemPromptEditor.cursorPosition
+                                                readonly property string editText: systemPromptEditor.text
+
+                                                onEditCursorPositionChanged: resetBlink()
+                                                onEditTextChanged: resetBlink()
+                                            }
+
                                             onTextChanged: {
                                                 if (!root.syncingSystemPrompt) {
                                                     if (!root.systemPromptDirty)
@@ -691,6 +705,7 @@ Item {
                                 }
                                 DankTextField {
                                     id: apiKeyField
+                                    objectName: "apiKeyField"
                                     width: parent.width
                                     text: root.saveApiKey ? root.apiKey : aiService.sessionApiKey
                                     echoMode: TextInput.Password
@@ -699,6 +714,7 @@ Item {
                                     onEditingFinished: {
                                         if (root.saveApiKey) {
                                             saveActiveField("apiKey", text.trim())
+                                            aiService.sessionApiKey = ""
                                         } else {
                                             aiService.sessionApiKey = text.trim()
                                         }
@@ -739,11 +755,18 @@ Item {
                                         font.pixelSize: Theme.fontSizeMedium
                                     }
                                     DankToggle {
+                                        objectName: "rememberApiKeyToggle"
                                         checked: root.saveApiKey
                                         onToggled: checked => {
+                                            if (!checked && root.apiKey) {
+                                                if (!aiService.sessionApiKey)
+                                                    aiService.sessionApiKey = root.apiKey
+                                                saveActiveField("apiKey", "")
+                                            }
                                             saveActiveField("saveApiKey", checked)
                                             if (checked && aiService.sessionApiKey) {
                                                 saveActiveField("apiKey", aiService.sessionApiKey)
+                                                aiService.sessionApiKey = ""
                                             }
                                         }
                                     }

@@ -13,7 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Align the system prompt editor's caret color, position, and blinking with other settings fields.
 - Send chat request bodies through standard input so long prompts and histories do not exceed process argument limits. Report process startup failures and keep chat request headers and URLs out of Quickshell's startup-error command log.
+- Remove stored API keys when remembering is disabled, clean up previously retained keys, and keep session keys separate per provider.
+- Keep API keys and authenticated URLs out of curl process arguments for chat and model discovery.
+- Preserve the message draft and active response when sending during streaming; cancel an active response when switching provider or endpoint.
+- Report streaming errors and incomplete transfers instead of finalizing them as successful responses.
+- Identify local endpoints by hostname, preserve a temperature of zero, and fix ordered-list numbering and code-language escaping in Markdown.
 
 ## [1.7.1] - 2026-10-14
 
